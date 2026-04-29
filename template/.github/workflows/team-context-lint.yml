@@ -1,0 +1,64 @@
+name: Team Context Lint
+
+on:
+  pull_request:
+    paths:
+      - 'systems/**'
+      - 'references/**'
+      - '.claude/skills/**'
+      - 'CLAUDE.md'
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Skills must have frontmatter
+        run: |
+          failed=0
+          for f in .claude/skills/*/SKILL.md; do
+            [ -f "$f" ] || continue
+            if ! head -1 "$f" | grep -q '^---$'; then
+              echo "::error file=$f::Missing YAML frontmatter (must start with ---)"
+              failed=1
+            fi
+            if ! grep -q '^name:' "$f"; then
+              echo "::error file=$f::Missing 'name:' in frontmatter"
+              failed=1
+            fi
+            if ! grep -q '^description:' "$f"; then
+              echo "::error file=$f::Missing 'description:' in frontmatter"
+              failed=1
+            fi
+          done
+          exit $failed
+
+      - name: No unfilled placeholders
+        run: |
+          failed=0
+          hits=$(grep -rn '{{' --include='*.md' --include='*.json' . \
+            | grep -v '.git/' \
+            | grep -v '_example' \
+            | grep -v '.claude/skills/setup/' \
+            | grep -v 'node_modules' || true)
+          if [ -n "$hits" ]; then
+            echo "$hits" | while IFS= read -r line; do
+              file=$(echo "$line" | cut -d: -f1)
+              echo "::error file=$file::Unfilled {{PLACEHOLDER}} found - run /setup to replace"
+            done
+            failed=1
+          fi
+          exit $failed
+
+      - name: No binary files in repo root
+        run: |
+          failed=0
+          for f in *.plugin *.zip *.tar.gz *.jar; do
+            if [ -f "$f" ]; then
+              echo "::error file=$f::Binary/packaged file should not be in the repo (use pointers, not copies)"
+              failed=1
+            fi
+          done
+          exit $failed
+

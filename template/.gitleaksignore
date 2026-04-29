@@ -1,0 +1,3 @@
+# Add gitleaks fingerprints here to suppress documented false positives.
+# Format: <file>:<rule-id>:<line-number>
+# Example: .claude/some-config.json:discord-api-token:125

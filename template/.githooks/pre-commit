@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+#
+# Pre-commit hook: detect secrets in staged files.
+# Uses gitleaks if available; falls back to grep-based pattern matching.
+#
+
+set -euo pipefail
+
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM)
+
+if [ -z "$STAGED_FILES" ]; then
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Option A: gitleaks (preferred)
+# ---------------------------------------------------------------------------
+if command -v gitleaks &>/dev/null; then
+    # Run gitleaks on staged changes only (pre-commit mode)
+    if ! gitleaks protect --staged --no-banner --exit-code 1 2>&1; then
+        echo ""
+        echo "=========================================================="
+        echo "  SECRET DETECTED — commit blocked by pre-commit hook"
+        echo "=========================================================="
+        echo ""
+        echo "gitleaks found potential secrets in your staged files."
+        echo "Review the output above, remove or rotate the secret,"
+        echo "then try again."
+        echo ""
+        exit 1
+    fi
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Option B: grep-based fallback
+# ---------------------------------------------------------------------------
+echo "[pre-commit] gitleaks not found — running basic secret pattern check..."
+
+# Patterns that look like hardcoded secrets.
+# Each entry is a label followed by a tab and an extended-grep pattern.
+PATTERNS=(
+    "AWS Key|AKIA[0-9A-Z]{16}"
+    "Private Key|-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"
+    "Generic Secret Assignment|(?i)(api_key|apikey|api_secret|secret_key|access_token|auth_token|credentials|password|passwd|private_key)\s*[:=]\s*[\"'][A-Za-z0-9+/=_\-]{8,}[\"']"
+    "Bearer Token|(?i)bearer\s+[A-Za-z0-9\-._~+/]+=*"
+    "Slack Token|xox[bpras]-[0-9a-zA-Z\-]{10,}"
+    "GitHub Token|gh[pousr]_[A-Za-z0-9_]{36,}"
+    "Generic Hex/Base64 Secret|(?i)(token|secret|key|password)\s*[:=]\s*[\"'][0-9a-fA-F]{32,}[\"']"
+)
+
+FOUND=0
+TMPFILE=$(mktemp)
+
+for FILE in $STAGED_FILES; do
+    # Skip binary files and deleted files
+    [ ! -f "$FILE" ] && continue
+
+    # Get the staged content (what will actually be committed)
+    STAGED_CONTENT=$(git show ":$FILE" 2>/dev/null) || continue
+
+    for ENTRY in "${PATTERNS[@]}"; do
+        LABEL="${ENTRY%%|*}"
+        PATTERN="${ENTRY#*|}"
+
+        # Match against staged content, then filter out env-var references
+        MATCHES=$(echo "$STAGED_CONTENT" | grep -nP "$PATTERN" 2>/dev/null || true)
+
+        if [ -n "$MATCHES" ]; then
+            # Filter out lines that are just env var references like ${VAR} or $VAR
+            FILTERED=$(echo "$MATCHES" | grep -vP '(\$\{[A-Z_]+\}|\$[A-Z_]+)' || true)
+
+            if [ -n "$FILTERED" ]; then
+                echo "$FILTERED" | while IFS= read -r LINE; do
+                    LINENUM="${LINE%%:*}"
+                    echo "  $FILE:$LINENUM  [$LABEL]"
+                done >> "$TMPFILE"
+                FOUND=1
+            fi
+        fi
+    done
+done
+
+if [ "$FOUND" -eq 1 ]; then
+    echo ""
+    echo "=========================================================="
+    echo "  SECRET DETECTED — commit blocked by pre-commit hook"
+    echo "=========================================================="
+    echo ""
+    echo "Potential secrets found in staged files:"
+    echo ""
+    cat "$TMPFILE"
+    echo ""
+    echo "If these are false positives, you can bypass with:"
+    echo "  git commit --no-verify"
+    echo ""
+    rm -f "$TMPFILE"
+    exit 1
+fi
+
+rm -f "$TMPFILE"
+exit 0
